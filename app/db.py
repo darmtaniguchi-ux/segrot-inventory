@@ -189,6 +189,43 @@ def add_movement(code, kind, input_unit, input_value, note=None, created_by=None
         conn.close()
 
 
+def set_stock(code, target_stock, created_by=None, note=None):
+    """
+    棚卸等の実地カウント結果に在庫を合わせる。
+    現在庫との差分を1件の調整movement(in/out)として記録する(手入力の履歴と同じ扱い)。
+    差分が0の場合は何も記録しない。
+    """
+    conn = get_conn()
+    try:
+        prod = conn.execute("SELECT * FROM products WHERE code=?", (code,)).fetchone()
+        if not prod:
+            raise ValueError("unknown product code")
+        row = conn.execute("""
+            SELECT p.opening,
+                   COALESCE(SUM(CASE WHEN m.kind='in'  THEN m.qty END),0) AS total_in,
+                   COALESCE(SUM(CASE WHEN m.kind='out' THEN m.qty END),0) AS total_out
+            FROM products p LEFT JOIN movements m ON m.code = p.code
+            WHERE p.code = ?
+        """, (code,)).fetchone()
+        current = row["opening"] + row["total_in"] - row["total_out"]
+        delta = int(target_stock) - current
+        if delta == 0:
+            return {"code": code, "before": current, "after": target_stock, "adjusted": 0}
+
+        kind = "in" if delta > 0 else "out"
+        qty = abs(delta)
+        conn.execute(
+            "INSERT INTO movements (code,move_date,kind,qty,input_unit,input_value,note,created_at,created_by) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (code, date.today().isoformat(), kind, qty, "pcs", qty,
+             note, datetime.now(timezone.utc).isoformat(), created_by),
+        )
+        conn.commit()
+        return {"code": code, "before": current, "after": target_stock, "adjusted": delta}
+    finally:
+        conn.close()
+
+
 def add_product(code, name, units_per_carton, jan=None, opening=0, moq=0):
     """新商品をマスタに追加する（管理者用）。
     moq: メーカー発注単位。felicross_fba側のメーカー発注判定で使用する（未入力可・0=未設定）。

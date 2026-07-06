@@ -133,6 +133,21 @@ async def movement(request: Request):
     return res
 
 
+@app.post("/api/stock-adjust")
+async def stock_adjust(request: Request):
+    """棚卸等の実地カウント結果に在庫を合わせる(差分を調整movementとして記録)。"""
+    u = require_writer(request)
+    body = await request.json()
+    try:
+        res = db.set_stock(
+            code=body["code"], target_stock=int(body["target_stock"]),
+            created_by=u["user"], note=body.get("note"),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return res
+
+
 @app.get("/api/lookup")
 def lookup(request: Request, jan: str):
     """バーコード(JAN)から商品を特定。読み取った文字列をそのまま渡す。"""
