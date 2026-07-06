@@ -16,7 +16,11 @@ import os
 import json
 from datetime import datetime, timezone, date
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "..", "segrot_inventory.db")
+# DB_PATH環境変数で永続ディスクの場所を指定できる(例: Renderで /data をマウントし
+# DB_PATH=/data/segrot_inventory.db とする)。未設定時はこれまで通りアプリ直下。
+DB_PATH = os.environ.get(
+    "DB_PATH", os.path.join(os.path.dirname(__file__), "..", "segrot_inventory.db")
+)
 SEED_PATH = os.path.join(os.path.dirname(__file__), "seed_products.json")
 
 SCHEMA = """
