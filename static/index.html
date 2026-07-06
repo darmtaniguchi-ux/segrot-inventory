@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+<title>セグロット在庫</title>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap');
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin:0; background:#e9e4d8; font-family:'Zen Kaku Gothic New',sans-serif; color:#1c2321; }
+  input, select, button { font-family: inherit; font-size: 16px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useMemo } = React;
+const C = { paper:"#f4f1ea", ink:"#1c2321", line:"#d8d2c4", accent:"#1f5c4d", alert:"#b4451f", gold:"#9a7b3f", inBg:"#eef3f1", outBg:"#fbeef0" };
+
+function api(path, opts={}) {
+  return fetch(path, { credentials:"same-origin", headers:{"Content-Type":"application/json"}, ...opts })
+    .then(async r => { if(!r.ok){ const e=await r.json().catch(()=>({detail:r.statusText})); throw new Error(e.detail||"エラー"); } return r.json(); });
+}
+
+function Login({ onLogin }) {
+  const [user,setUser]=useState(""); const [pw,setPw]=useState(""); const [err,setErr]=useState("");
+  const submit = () => {
+    const fd = new URLSearchParams(); fd.append("user",user); fd.append("password",pw);
+    fetch("/api/login",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:fd})
+      .then(async r=>{ if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.detail||"ログイン失敗");} return r.json();})
+      .then(onLogin).catch(e=>setErr(e.message));
+  };
+  return (
+    <div style={S.loginWrap}>
+      <div style={S.loginCard}>
+        <div style={S.brand}>FELICROSS</div>
+        <h1 style={S.loginTitle}>セグロット在庫</h1>
+        <input style={S.input} placeholder="ユーザー名" value={user} onChange={e=>setUser(e.target.value)} />
+        <input style={S.input} type="password" placeholder="パスワード" value={pw} onChange={e=>setPw(e.target.value)}
+          onKeyDown={e=>e.key==="Enter"&&submit()} />
+        {err && <div style={S.err}>{err}</div>}
+        <button style={S.primaryBtn} onClick={submit}>ログイン</button>
+      </div>
+    </div>
+  );
+}
+
+function Scanner({ onDetect, onClose }) {
+  const videoRef = React.useRef(null);
+  const [err,setErr]=useState("");
+  useEffect(()=>{
+    let reader;
+    if(!window.ZXing){ setErr("読み取りライブラリを読み込めませんでした"); return; }
+    try {
+      reader = new window.ZXing.BrowserMultiFormatReader();
+      reader.decodeFromVideoDevice(null, videoRef.current, (result, e) => {
+        if(result){ onDetect(result.getText()); }
+      });
+    } catch(e){ setErr("カメラを起動できません（HTTPS接続が必要です）"); }
+    return ()=>{ try{ reader && reader.reset(); }catch(e){} };
+  },[]);
+  return (
+    <div style={S.scanOverlay}>
+      <div style={S.scanBox}>
+        <div style={S.scanHead}>バーコードをかざしてください<button style={S.scanClose} onClick={onClose}>閉じる</button></div>
+        <video ref={videoRef} style={S.scanVideo} muted playsInline />
+        {err && <div style={S.err}>{err}</div>}
+        <div style={S.scanHint}>商品のJANコードを枠内に映すと自動で読み取ります</div>
+      </div>
+    </div>
+  );
+}
+
+function InputView({ me }) {
+  const [products,setProducts]=useState([]);
+  const [code,setCode]=useState(""); const [kind,setKind]=useState("out");
+  const [unit,setUnit]=useState("carton"); const [value,setValue]=useState("");
+  const [msg,setMsg]=useState(null); const [q,setQ]=useState("");
+  const [recent,setRecent]=useState([]);
+  const [scanning,setScanning]=useState(false);
+
+  const load = () => { api("/api/products").then(d=>setProducts(d.items)); api("/api/movements").then(d=>setRecent(d.items)); };
+  useEffect(load,[]);
+
+  const onDetect = (jan) => {
+    setScanning(false);
+    api(`/api/lookup?jan=${encodeURIComponent(jan)}`)
+      .then(p=>{ setCode(p.code); setQ(""); setMsg({t:`読取：${p.name}`,e:false}); })
+      .catch(e=>setMsg({t:`JAN ${jan}：${e.message}`,e:true}));
+  };
+
+  const filtered = useMemo(()=> products.filter(p=> !q || p.name.includes(q) || p.code.includes(q)), [products,q]);
+  const sel = products.find(p=>p.code===code);
+  const previewPcs = sel && value ? (unit==="carton" ? Number(value)*sel.units_per_carton : Number(value)) : null;
+
+  const submit = () => {
+    if(!code){ setMsg({t:"商品を選んでください",e:true}); return; }
+    if(!value || Number(value)<=0){ setMsg({t:"数量を入力してください",e:true}); return; }
+    api("/api/movement",{method:"POST",body:JSON.stringify({code,kind,unit,value:Number(value)})})
+      .then(r=>{ setMsg({t:`登録しました：${kind==="in"?"入荷":"出荷"} ${r.qty}個`,e:false}); setValue(""); load(); })
+      .catch(e=>setMsg({t:e.message,e:true}));
+  };
+
+  return (
+    <div style={S.page}>
+      {scanning && <Scanner onDetect={onDetect} onClose={()=>setScanning(false)} />}
+      <Header me={me} title="入出庫の入力" />
+      <div style={S.card}>
+        <button style={S.scanBtn} onClick={()=>setScanning(true)}>📷 バーコードで商品を読み取る</button>
+        <label style={S.label}>または商品を検索</label>
+        <input style={S.input} placeholder="商品名・コードで絞り込み" value={q} onChange={e=>setQ(e.target.value)} />
+        <select style={S.select} value={code} onChange={e=>setCode(e.target.value)} size="1">
+          <option value="">— 商品を選択 —</option>
+          {filtered.map(p=> <option key={p.code} value={p.code}>{p.name}（{p.code}）入数{p.units_per_carton}</option>)}
+        </select>
+        {sel && <div style={S.selBox}>選択中：<b>{sel.name}</b>（{sel.code}）{sel.jan?`／JAN ${sel.jan}`:"／JANなし"}</div>}
+
+        <div style={S.row}>
+          <button style={kind==="in"?{...S.toggle,...S.toggleInActive}:S.toggle} onClick={()=>setKind("in")}>入荷</button>
+          <button style={kind==="out"?{...S.toggle,...S.toggleOutActive}:S.toggle} onClick={()=>setKind("out")}>出荷</button>
+        </div>
+
+        <div style={S.row}>
+          <button style={unit==="carton"?{...S.toggle,...S.unitActive}:S.toggle} onClick={()=>setUnit("carton")}>カートン</button>
+          <button style={unit==="pcs"?{...S.toggle,...S.unitActive}:S.toggle} onClick={()=>setUnit("pcs")}>個数</button>
+        </div>
+
+        <label style={S.label}>{unit==="carton"?"カートン数":"個数"}</label>
+        <input style={S.input} type="number" inputMode="numeric" min="1" value={value} onChange={e=>setValue(e.target.value)} placeholder="数量" />
+        {previewPcs!=null && <div style={S.preview}>= {previewPcs.toLocaleString()} 個 として記録されます{sel&&unit==="carton"?`（${sel.units_per_carton}個 × ${value}）`:""}</div>}
+
+        {msg && <div style={msg.e?S.err:S.ok}>{msg.t}</div>}
+        <button style={S.primaryBtn} onClick={submit}>登録する</button>
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardTitle}>最近の登録</div>
+        {recent.length===0 && <div style={S.muted}>まだありません</div>}
+        {recent.slice(0,8).map(m=>(
+          <div key={m.id} style={S.recentRow}>
+            <span style={{...S.badge, background:m.kind==="in"?C.inBg:C.outBg, color:m.kind==="in"?C.accent:C.alert}}>{m.kind==="in"?"入荷":"出荷"}</span>
+            <span style={S.recentName}>{m.name}</span>
+            <span style={S.recentQty}>{m.qty}個</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function FbaShipmentView({ me }) {
+  const [products,setProducts]=useState([]);
+  const [items,setItems]=useState([{code:"",cartons:""}]);
+  const [boxes,setBoxes]=useState([{length_cm:"",width_cm:"",height_cm:"",weight_kg:""}]);
+  const [carrier,setCarrier]=useState(""); const [note,setNote]=useState("");
+  const [msg,setMsg]=useState(null); const [history,setHistory]=useState([]);
+  const [trackInput,setTrackInput]=useState({});
+
+  const load = () => {
+    api("/api/products").then(d=>setProducts(d.items));
+    api("/api/fba-shipment").then(d=>setHistory(d.items));
+  };
+  useEffect(load,[]);
+
+  const setItem = (i,key,val) => setItems(arr=>arr.map((it,idx)=>idx===i?{...it,[key]:val}:it));
+  const addItemRow = () => setItems(arr=>[...arr,{code:"",cartons:""}]);
+  const removeItemRow = (i) => setItems(arr=>arr.filter((_,idx)=>idx!==i));
+
+  const setBox = (i,key,val) => setBoxes(arr=>arr.map((b,idx)=>idx===i?{...b,[key]:val}:b));
+  const addBoxRow = () => setBoxes(arr=>[...arr,{length_cm:"",width_cm:"",height_cm:"",weight_kg:""}]);
+  const removeBoxRow = (i) => setBoxes(arr=>arr.filter((_,idx)=>idx!==i));
+
+  const submit = () => {
+    const cleanItems = items.filter(it=>it.code && it.cartons).map(it=>({code:it.code, cartons:Number(it.cartons)}));
+    const cleanBoxes = boxes.map(b=>({
+      length_cm: b.length_cm?Number(b.length_cm):null, width_cm: b.width_cm?Number(b.width_cm):null,
+      height_cm: b.height_cm?Number(b.height_cm):null, weight_kg: b.weight_kg?Number(b.weight_kg):null,
+    }));
+    if(!cleanItems.length){ setMsg({e:true,t:"発送する商品を1件以上入力してください"}); return; }
+    api("/api/fba-shipment",{method:"POST",body:JSON.stringify({items:cleanItems,boxes:cleanBoxes,carrier,note})})
+      .then(r=>{ setMsg({e:false,t:`報告を登録しました（発送ID: ${r.shipment_id} / 箱${r.box_count}個）`});
+        setItems([{code:"",cartons:""}]); setBoxes([{length_cm:"",width_cm:"",height_cm:"",weight_kg:""}]);
+        setCarrier(""); setNote(""); load(); })
+      .catch(e=>setMsg({e:true,t:e.message}));
+  };
+
+  const submitTracking = (shipmentId, boxNo) => {
+    const key = `${shipmentId}-${boxNo}`;
+    const val = trackInput[key];
+    if(!val) return;
+    api("/api/fba-shipment/tracking",{method:"POST",body:JSON.stringify({shipment_id:shipmentId,box_no:boxNo,tracking_number:val})})
+      .then(load);
+  };
+
+  return (
+    <div style={S.page}>
+      <Header me={me} title="FBA発送報告" />
+      <div style={S.notice2}>
+        Amazonへの登録はまだ行われません（認証情報の設定待ち）。ここでは発送内容・箱の情報を記録します。
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardTitle}>発送する商品</div>
+        {items.map((it,i)=>(
+          <div key={i} style={S.itemRow}>
+            <select style={S.selectSm} value={it.code} onChange={e=>setItem(i,"code",e.target.value)}>
+              <option value="">— 商品を選択 —</option>
+              {products.map(p=><option key={p.code} value={p.code}>{p.name}（{p.code}）</option>)}
+            </select>
+            <input style={S.inputSm} type="number" min="1" placeholder="カートン数" value={it.cartons}
+              onChange={e=>setItem(i,"cartons",e.target.value)} />
+            {items.length>1 && <button style={S.removeBtn} onClick={()=>removeItemRow(i)}>×</button>}
+          </div>
+        ))}
+        <button style={S.addRowBtn} onClick={addItemRow}>＋ 商品を追加</button>
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardTitle}>箱の情報（サイズ・重量）</div>
+        {boxes.map((b,i)=>(
+          <div key={i} style={S.boxRow}>
+            <div style={S.boxLabel}>箱{i+1}</div>
+            <input style={S.inputXs} type="number" placeholder="縦cm" value={b.length_cm} onChange={e=>setBox(i,"length_cm",e.target.value)} />
+            <input style={S.inputXs} type="number" placeholder="横cm" value={b.width_cm} onChange={e=>setBox(i,"width_cm",e.target.value)} />
+            <input style={S.inputXs} type="number" placeholder="高cm" value={b.height_cm} onChange={e=>setBox(i,"height_cm",e.target.value)} />
+            <input style={S.inputXs} type="number" placeholder="重量kg" value={b.weight_kg} onChange={e=>setBox(i,"weight_kg",e.target.value)} />
+            {boxes.length>1 && <button style={S.removeBtn} onClick={()=>removeBoxRow(i)}>×</button>}
+          </div>
+        ))}
+        <button style={S.addRowBtn} onClick={addBoxRow}>＋ 箱を追加</button>
+      </div>
+
+      <div style={S.card}>
+        <label style={S.label}>配送業者（自社便で送る場合）</label>
+        <input style={S.input} value={carrier} onChange={e=>setCarrier(e.target.value)} placeholder="例: 佐川急便" />
+        <label style={S.label}>備考</label>
+        <input style={S.input} value={note} onChange={e=>setNote(e.target.value)} placeholder="任意" />
+        {msg && <div style={msg.e?S.err:S.ok}>{msg.t}</div>}
+        <button style={S.primaryBtn} onClick={submit}>発送報告を登録する</button>
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardTitle}>これまでの発送報告</div>
+        {history.length===0 && <div style={S.muted}>まだありません</div>}
+        {history.map(s=>(
+          <div key={s.id} style={S.shipCard}>
+            <div style={S.shipHead}>発送ID {s.id} ／ {new Date(s.created_at).toLocaleString("ja-JP")} ／ {s.carrier||"配送業者未記入"}</div>
+            {s.items.map((it,i)=>(<div key={i} style={S.shipItem}>・{it.name}（{it.code}） {it.cartons}カートン / {it.qty}個</div>))}
+            {s.boxes.map((b,i)=>{
+              const key = `${s.id}-${b.box_no}`;
+              return (
+                <div key={i} style={S.boxTrackRow}>
+                  <span style={S.boxTrackLabel}>箱{b.box_no}: {b.length_cm||"—"}×{b.width_cm||"—"}×{b.height_cm||"—"}cm / {b.weight_kg||"—"}kg</span>
+                  {b.tracking_number ? (
+                    <span style={S.trackDone}>追跡番号: {b.tracking_number}</span>
+                  ) : (
+                    <span style={S.trackInputRow}>
+                      <input style={S.inputXs} placeholder="追跡番号を入力"
+                        value={trackInput[key]||""} onChange={e=>setTrackInput(t=>({...t,[key]:e.target.value}))} />
+                      <button style={S.trackBtn} onClick={()=>submitTracking(s.id,b.box_no)}>報告</button>
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function StockView({ me }) {
+  const [items,setItems]=useState([]); const [q,setQ]=useState("");
+  useEffect(()=>{ api("/api/stock").then(d=>setItems(d.items)); },[]);
+  const filtered = useMemo(()=> items.filter(p=> !q || p.name.includes(q) || p.code.includes(q)), [items,q]);
+  const moved = filtered.filter(p=>p.today_in||p.today_out);
+
+  return (
+    <div style={S.page}>
+      <Header me={me} title="在庫の確認" />
+      <div style={S.card}>
+        <div style={S.cardTitle}>本日動きのあった商品（{moved.length}）</div>
+        {moved.length===0 && <div style={S.muted}>本日の入出庫はまだありません</div>}
+        {moved.map(p=>(
+          <div key={p.code} style={S.stockRow}>
+            <div style={S.stockName}>{p.name}<div style={S.stockCode}>{p.code}</div></div>
+            <div style={S.stockNums}>
+              {p.today_in>0 && <span style={{color:C.accent}}>+{p.today_in}</span>}
+              {p.today_out>0 && <span style={{color:C.alert}}>−{p.today_out}</span>}
+              <span style={S.stockNow}>在庫 {p.stock.toLocaleString()}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div style={S.card}>
+        <div style={S.cardTitle}>全商品の在庫</div>
+        <input style={S.input} placeholder="商品名・コードで絞り込み" value={q} onChange={e=>setQ(e.target.value)} />
+        {filtered.map(p=>(
+          <div key={p.code} style={S.stockRow}>
+            <div style={S.stockName}>{p.name}<div style={S.stockCode}>{p.code} ・ 入数{p.units_per_carton}</div></div>
+            <div style={S.stockNow}>{p.stock.toLocaleString()}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function HistoryView({ me }) {
+  const [items,setItems]=useState([]); const [products,setProducts]=useState([]);
+  const [code,setCode]=useState(""); const [kind,setKind]=useState("");
+  const [dateFrom,setDateFrom]=useState(""); const [dateTo,setDateTo]=useState("");
+  const [loading,setLoading]=useState(false);
+
+  useEffect(()=>{ api("/api/products").then(d=>setProducts(d.items)); },[]);
+
+  const load = () => {
+    setLoading(true);
+    const params = new URLSearchParams({ limit:"200" });
+    if(code) params.set("code",code);
+    if(kind) params.set("kind",kind);
+    if(dateFrom) params.set("date_from",dateFrom);
+    if(dateTo) params.set("date_to",dateTo);
+    api(`/api/movements?${params.toString()}`).then(d=>setItems(d.items)).finally(()=>setLoading(false));
+  };
+  useEffect(load, []);
+
+  return (
+    <div style={S.page}>
+      <Header me={me} title="入出庫履歴" />
+      <div style={S.card}>
+        <label style={S.label}>商品で絞り込み</label>
+        <select style={S.select} value={code} onChange={e=>setCode(e.target.value)}>
+          <option value="">— すべての商品 —</option>
+          {products.map(p=><option key={p.code} value={p.code}>{p.name}（{p.code}）</option>)}
+        </select>
+        <div style={S.row}>
+          <button style={kind===""?{...S.toggle,...S.unitActive}:S.toggle} onClick={()=>setKind("")}>すべて</button>
+          <button style={kind==="in"?{...S.toggle,...S.toggleInActive}:S.toggle} onClick={()=>setKind("in")}>入荷のみ</button>
+          <button style={kind==="out"?{...S.toggle,...S.toggleOutActive}:S.toggle} onClick={()=>setKind("out")}>出荷のみ</button>
+        </div>
+        <label style={S.label}>期間（任意）</label>
+        <div style={S.row}>
+          <input style={S.input} type="date" value={dateFrom} onChange={e=>setDateFrom(e.target.value)} />
+          <input style={S.input} type="date" value={dateTo} onChange={e=>setDateTo(e.target.value)} />
+        </div>
+        <button style={S.primaryBtn} onClick={load}>{loading?"検索中…":"絞り込む"}</button>
+      </div>
+      <div style={S.card}>
+        <div style={S.cardTitle}>履歴（{items.length}件・最新200件まで）</div>
+        {items.length===0 && <div style={S.muted}>該当する履歴がありません</div>}
+        {items.map(m=>(
+          <div key={m.id} style={{...S.recentRow, flexWrap:"wrap"}}>
+            <span style={{...S.badge, background:m.kind==="in"?C.inBg:C.outBg, color:m.kind==="in"?C.accent:C.alert}}>{m.kind==="in"?"入荷":"出荷"}</span>
+            <span style={S.recentName}>{m.name}</span>
+            <span style={S.recentQty}>{m.qty}個</span>
+            <div style={{width:"100%", fontSize:11, color:"#8a8576", display:"flex", justifyContent:"space-between"}}>
+              <span>{m.move_date}{m.input_unit==="carton"?`（${m.input_value}カートン入力）`:""}{m.note?` ・ ${m.note}`:""}</span>
+              <span>{m.created_by||"—"}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ProductAddView({ me }) {
+  const [code,setCode]=useState(""); const [name,setName]=useState("");
+  const [upc,setUpc]=useState(""); const [jan,setJan]=useState(""); const [opening,setOpening]=useState("");
+  const [moq,setMoq]=useState("");
+  const [msg,setMsg]=useState(null); const [added,setAdded]=useState([]);
+
+  const submit = () => {
+    if(!code.trim()||!name.trim()){ setMsg({t:"商品コードと商品名は必須です",e:true}); return; }
+    api("/api/product",{method:"POST",body:JSON.stringify({
+      code:code.trim(), name:name.trim(),
+      units_per_carton: Number(upc)||1, jan: jan.trim()||null, opening: Number(opening)||0,
+      moq: Number(moq)||0,
+    })})
+      .then(r=>{ setMsg({t:`登録しました：${r.name}（${r.code}）`,e:false});
+        setAdded(a=>[{code:r.code,name:r.name},...a]);
+        setCode("");setName("");setUpc("");setJan("");setOpening("");setMoq(""); })
+      .catch(e=>setMsg({t:e.message,e:true}));
+  };
+
+  return (
+    <div style={S.page}>
+      <Header me={me} title="商品の追加（管理者）" />
+      <div style={S.card}>
+        <div style={S.muted}>新しい商品をマスタに登録します。商品コードとJANはNextengineで採番したものを入力してください。</div>
+        <label style={S.label}>商品コード（必須）</label>
+        <input style={S.input} value={code} onChange={e=>setCode(e.target.value)} placeholder="例: FTC07w" />
+        <label style={S.label}>商品名（必須）</label>
+        <input style={S.input} value={name} onChange={e=>setName(e.target.value)} placeholder="例: ピントキッズ ◯◯" />
+        <label style={S.label}>入数（1カートンあたり個数）</label>
+        <input style={S.input} type="number" inputMode="numeric" min="1" value={upc} onChange={e=>setUpc(e.target.value)} placeholder="例: 40" />
+        <label style={S.label}>JANコード（任意・13桁）</label>
+        <input style={S.input} type="number" inputMode="numeric" value={jan} onChange={e=>setJan(e.target.value)} placeholder="例: 4580095400000" />
+        <label style={S.label}>期首在庫（導入時点の在庫数・任意）</label>
+        <input style={S.input} type="number" inputMode="numeric" min="0" value={opening} onChange={e=>setOpening(e.target.value)} placeholder="0" />
+        <label style={S.label}>メーカー発注単位(MOQ)・任意 ／ FTCシリーズは1000</label>
+        <input style={S.input} type="number" inputMode="numeric" min="0" value={moq} onChange={e=>setMoq(e.target.value)} placeholder="例: 1000" />
+        {msg && <div style={msg.e?S.err:S.ok}>{msg.t}</div>}
+        <button style={S.primaryBtn} onClick={submit}>商品を登録する</button>
+      </div>
+      {added.length>0 && (
+        <div style={S.card}>
+          <div style={S.cardTitle}>今回追加した商品</div>
+          {added.map((p,i)=>(<div key={i} style={S.recentRow}><span style={S.recentName}>{p.name}</span><span style={S.recentQty}>{p.code}</span></div>))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Header({ me, title }) {
+  const logout = () => api("/api/logout",{method:"POST"}).then(()=>location.reload());
+  return (
+    <div style={S.header}>
+      <div><div style={S.brandSm}>FELICROSS ／ セグロット在庫</div><div style={S.pageTitle}>{title}</div></div>
+      <div style={S.userBox}><span style={S.userName}>{me.user}</span><button style={S.logoutBtn} onClick={logout}>ログアウト</button></div>
+    </div>
+  );
+}
+
+function App() {
+  const [me,setMe]=useState(null); const [checked,setChecked]=useState(false);
+  const [tab,setTab]=useState(null);
+  useEffect(()=>{ api("/api/me").then(setMe).catch(()=>setMe(null)).finally(()=>setChecked(true)); },[]);
+  if(!checked) return <div style={S.page}><div style={S.muted}>読み込み中…</div></div>;
+  if(!me) return <Login onLogin={setMe} />;
+  // writer(セグロット)=入力/FBA発送報告 / viewer(フェリクロス)=確認のみ / admin=すべて
+  // 在庫確認・入出庫履歴はどのロールでも閲覧可能。入力系のタブのみ書き込み権限で制限する。
+  const canWrite = me.role==="writer"||me.role==="admin";
+  const isAdmin = me.role==="admin";
+  const effTab = tab || (canWrite ? "input" : "stock");
+  return (
+    <div>
+      <div style={S.tabBar}>
+        {canWrite && <button style={effTab==="input"?S.tabActive:S.tab} onClick={()=>setTab("input")}>入出庫入力</button>}
+        {canWrite && <button style={effTab==="fba"?S.tabActive:S.tab} onClick={()=>setTab("fba")}>FBA発送報告</button>}
+        <button style={effTab==="stock"?S.tabActive:S.tab} onClick={()=>setTab("stock")}>在庫確認</button>
+        <button style={effTab==="history"?S.tabActive:S.tab} onClick={()=>setTab("history")}>入出庫履歴</button>
+        {isAdmin && <button style={effTab==="add"?S.tabActive:S.tab} onClick={()=>setTab("add")}>商品追加</button>}
+      </div>
+      {effTab==="add" && isAdmin ? <ProductAddView me={me}/>
+        : effTab==="fba" && canWrite ? <FbaShipmentView me={me}/>
+        : effTab==="input" && canWrite ? <InputView me={me}/>
+        : effTab==="history" ? <HistoryView me={me}/>
+        : <StockView me={me}/>}
+    </div>
+  );
+}
+
+const S = {
+  page:{maxWidth:560, margin:"0 auto", padding:"12px 12px 40px"},
+  header:{display:"flex", justifyContent:"space-between", alignItems:"flex-start", padding:"6px 4px 14px", borderBottom:`2px solid ${C.ink}`},
+  brandSm:{fontSize:10, letterSpacing:2, color:C.gold, fontWeight:700},
+  pageTitle:{fontSize:20, fontWeight:700, marginTop:2},
+  userBox:{textAlign:"right"}, userName:{fontSize:12, color:"#6b6658", display:"block"},
+  logoutBtn:{marginTop:4, background:"transparent", border:`1px solid ${C.line}`, borderRadius:6, padding:"4px 8px", fontSize:12, color:C.ink},
+  tabBar:{display:"flex", gap:6, maxWidth:560, margin:"10px auto 0", padding:"0 12px"},
+  tab:{flex:1, padding:"10px", background:"#fff", border:`1px solid ${C.line}`, borderRadius:8, fontWeight:500, color:C.ink},
+  tabActive:{flex:1, padding:"10px", background:C.accent, border:`1px solid ${C.accent}`, borderRadius:8, fontWeight:700, color:"#fff"},
+  card:{background:"#fff", border:`1px solid ${C.line}`, borderRadius:12, padding:16, marginTop:12},
+  cardTitle:{fontWeight:700, fontSize:14, marginBottom:10},
+  label:{display:"block", fontSize:12, color:"#6b6658", margin:"10px 0 4px"},
+  input:{width:"100%", padding:"12px", border:`1px solid ${C.line}`, borderRadius:8, marginBottom:6, background:"#fff"},
+  select:{width:"100%", padding:"12px", border:`1px solid ${C.line}`, borderRadius:8, marginTop:6, marginBottom:6, background:"#fff"},
+  row:{display:"flex", gap:8, marginTop:8},
+  toggle:{flex:1, padding:"12px", background:"#fff", border:`1px solid ${C.line}`, borderRadius:8, fontWeight:500, color:C.ink},
+  toggleInActive:{background:C.inBg, border:`2px solid ${C.accent}`, color:C.accent, fontWeight:700},
+  toggleOutActive:{background:C.outBg, border:`2px solid ${C.alert}`, color:C.alert, fontWeight:700},
+  unitActive:{background:"#efeae0", border:`2px solid ${C.gold}`, color:"#7a5f28", fontWeight:700},
+  preview:{fontSize:13, color:C.accent, background:C.inBg, padding:"8px 10px", borderRadius:6, marginTop:6},
+  primaryBtn:{width:"100%", padding:"14px", background:C.accent, color:"#fff", border:"none", borderRadius:8, fontWeight:700, fontSize:16, marginTop:12},
+  notice2:{background:"#fff7ed", borderLeft:`4px solid ${C.alert}`, padding:"10px 14px", fontSize:12.5, lineHeight:1.6, borderRadius:4, marginTop:12},
+  itemRow:{display:"flex", gap:6, marginBottom:8, alignItems:"center"},
+  selectSm:{flex:1, padding:"10px", border:`1px solid ${C.line}`, borderRadius:8, background:"#fff", fontSize:14},
+  inputSm:{width:110, padding:"10px", border:`1px solid ${C.line}`, borderRadius:8, fontSize:14},
+  removeBtn:{width:32, height:38, background:"#fbeef0", color:C.alert, border:"none", borderRadius:6, fontSize:16, fontWeight:700},
+  addRowBtn:{width:"100%", padding:"10px", background:"transparent", border:`1px dashed ${C.gold}`, borderRadius:8, color:"#7a5f28", fontWeight:600, fontSize:13, marginTop:4},
+  boxRow:{display:"flex", gap:6, marginBottom:8, alignItems:"center"},
+  boxLabel:{fontSize:12.5, color:"#6b6658", width:36, flexShrink:0},
+  inputXs:{width:0, flex:1, minWidth:0, padding:"9px 6px", border:`1px solid ${C.line}`, borderRadius:6, fontSize:13, textAlign:"center"},
+  shipCard:{border:`1px solid ${C.line}`, borderRadius:8, padding:"10px 12px", marginTop:10},
+  shipHead:{fontSize:12, color:"#6b6658", marginBottom:6, fontWeight:600},
+  shipItem:{fontSize:13, marginBottom:2},
+  boxTrackRow:{display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:6, marginTop:6, paddingTop:6, borderTop:`1px dashed ${C.line}`},
+  boxTrackLabel:{fontSize:12, color:"#6b6658"},
+  trackDone:{fontSize:12.5, color:C.accent, fontWeight:700},
+  trackInputRow:{display:"flex", gap:6},
+  trackBtn:{background:C.accent, color:"#fff", border:"none", borderRadius:6, padding:"6px 10px", fontSize:12, fontWeight:700},
+  err:{background:"#fbeef0", color:C.alert, padding:"8px 10px", borderRadius:6, fontSize:13, marginTop:8},
+  ok:{background:C.inBg, color:C.accent, padding:"8px 10px", borderRadius:6, fontSize:13, marginTop:8},
+  muted:{color:"#8a8576", fontSize:13, padding:"6px 0"},
+  recentRow:{display:"flex", alignItems:"center", gap:8, padding:"8px 0", borderBottom:`1px solid ${C.line}`},
+  badge:{fontSize:11, padding:"2px 8px", borderRadius:10, fontWeight:700},
+  recentName:{flex:1, fontSize:13, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"},
+  recentQty:{fontSize:13, fontWeight:700},
+  stockRow:{display:"flex", justifyContent:"space-between", alignItems:"center", gap:10, padding:"10px 0", borderBottom:`1px solid ${C.line}`},
+  stockName:{fontSize:13, flex:1}, stockCode:{fontSize:10.5, color:"#8a8576", marginTop:2},
+  stockNums:{display:"flex", gap:8, alignItems:"center", fontSize:13, fontWeight:700},
+  stockNow:{fontSize:14, fontWeight:700},
+  scanBtn:{width:"100%", padding:"13px", background:"#efeae0", border:`2px solid ${C.gold}`, borderRadius:8, fontWeight:700, fontSize:15, color:"#7a5f28", marginBottom:6},
+  selBox:{fontSize:12.5, color:C.accent, background:C.inBg, padding:"8px 10px", borderRadius:6, marginTop:8},
+  scanOverlay:{position:"fixed", inset:0, background:"rgba(0,0,0,0.8)", zIndex:1000, display:"flex", alignItems:"center", justifyContent:"center", padding:16},
+  scanBox:{background:"#fff", borderRadius:12, padding:16, width:"100%", maxWidth:420},
+  scanHead:{display:"flex", justifyContent:"space-between", alignItems:"center", fontWeight:700, fontSize:14, marginBottom:10},
+  scanClose:{background:C.ink, color:"#fff", border:"none", borderRadius:6, padding:"6px 12px", fontSize:13},
+  scanVideo:{width:"100%", borderRadius:8, background:"#000", aspectRatio:"4/3", objectFit:"cover"},
+  scanHint:{fontSize:12, color:"#6b6658", marginTop:8, textAlign:"center"},
+  loginWrap:{minHeight:"100vh", display:"flex", alignItems:"center", justifyContent:"center", padding:16},
+  loginCard:{background:"#fff", border:`1px solid ${C.line}`, borderRadius:14, padding:"28px 22px", width:"100%", maxWidth:340},
+  brand:{fontSize:11, letterSpacing:3, color:C.gold, fontWeight:700, textAlign:"center"},
+  loginTitle:{fontSize:22, fontWeight:700, textAlign:"center", margin:"4px 0 18px"},
+};
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
