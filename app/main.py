@@ -16,13 +16,16 @@
   - viewer: 在庫確認のみ（フェリクロス側の閲覧）
   - admin : 両方（谷口さん）
 """
+import io
 import os
 import json
 import hashlib
 import secrets
+from datetime import datetime
 from fastapi import FastAPI, HTTPException, Request, Response, Depends, Form
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from openpyxl import Workbook
 from pydantic import BaseModel
 
 from . import db
@@ -116,6 +119,37 @@ def products(request: Request):
 def stock(request: Request):
     current_user(request)
     return {"items": db.current_stock()}
+
+
+@app.get("/api/stock/export")
+def stock_export(request: Request):
+    """在庫一覧をExcel(.xlsx)としてダウンロードする。閲覧権限があれば誰でも可能。"""
+    current_user(request)
+    items = db.current_stock()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "在庫一覧"
+    headers = ["商品コード", "商品名", "入数", "在庫数", "本日入荷", "本日出荷"]
+    ws.append(headers)
+    for it in items:
+        ws.append([
+            it["code"], it["name"], it["units_per_carton"],
+            it["stock"], it["today_in"], it["today_out"],
+        ])
+    for col, width in zip("ABCDEF", [14, 42, 8, 10, 10, 10]):
+        ws.column_dimensions[col].width = width
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    filename = f"segrot_zaiko_{datetime.now().strftime('%Y%m%d')}.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.post("/api/movement")

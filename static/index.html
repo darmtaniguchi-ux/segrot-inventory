@@ -298,7 +298,10 @@ function StockView({ me }) {
         ))}
       </div>
       <div style={S.card}>
-        <div style={S.cardTitle}>全商品の在庫</div>
+        <div style={S.stockHeadRow}>
+          <div style={S.cardTitle}>全商品の在庫</div>
+          <a style={S.exportBtn} href="/api/stock/export">📥 Excelでダウンロード</a>
+        </div>
         <input style={S.input} placeholder="商品名・コードで絞り込み" value={q} onChange={e=>setQ(e.target.value)} />
         {filtered.map(p=>(
           <div key={p.code} style={S.stockRow}>
@@ -470,6 +473,8 @@ const S = {
   tabActive:{flex:1, padding:"10px", background:C.accent, border:`1px solid ${C.accent}`, borderRadius:8, fontWeight:700, color:"#fff"},
   card:{background:"#fff", border:`1px solid ${C.line}`, borderRadius:12, padding:16, marginTop:12},
   cardTitle:{fontWeight:700, fontSize:14, marginBottom:10},
+  stockHeadRow:{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10},
+  exportBtn:{fontSize:12, fontWeight:700, color:C.accent, background:C.inBg, padding:"7px 12px", borderRadius:6, textDecoration:"none"},
   label:{display:"block", fontSize:12, color:"#6b6658", margin:"10px 0 4px"},
   input:{width:"100%", padding:"12px", border:`1px solid ${C.line}`, borderRadius:8, marginBottom:6, background:"#fff"},
   select:{width:"100%", padding:"12px", border:`1px solid ${C.line}`, borderRadius:8, marginTop:6, marginBottom:6, background:"#fff"},
