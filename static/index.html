@@ -82,16 +82,24 @@ function InputView({ me }) {
   const [msg,setMsg]=useState(null); const [q,setQ]=useState("");
   const [recent,setRecent]=useState([]);
   const [scanning,setScanning]=useState(false);
+  const [janPick,setJanPick]=useState(null);
 
   const load = () => { api("/api/products").then(d=>setProducts(d.items)); api("/api/movements").then(d=>setRecent(d.items)); };
   useEffect(load,[]);
 
   const onDetect = (jan) => {
     setScanning(false);
+    setJanPick(null);
     api(`/api/lookup?jan=${encodeURIComponent(jan)}`)
-      .then(p=>{ setCode(p.code); setQ(""); setMsg({t:`読取：${p.name}`,e:false}); })
+      .then(d=>{
+        const items = d.items;
+        if(items.length===1){ setCode(items[0].code); setQ(""); setMsg({t:`読取：${items[0].name}`,e:false}); }
+        else { setJanPick(items); setMsg({t:`同じJANの商品が${items.length}件あります。ロットを選んでください`,e:false}); }
+      })
       .catch(e=>setMsg({t:`JAN ${jan}：${e.message}`,e:true}));
   };
+
+  const pickJan = (p) => { setCode(p.code); setQ(""); setJanPick(null); setMsg({t:`選択：${p.name}（${p.code}）`,e:false}); };
 
   const filtered = useMemo(()=> products.filter(p=> !q || p.name.includes(q) || p.code.includes(q)), [products,q]);
   const sel = products.find(p=>p.code===code);
@@ -118,6 +126,14 @@ function InputView({ me }) {
           {filtered.map(p=> <option key={p.code} value={p.code}>{p.name}（{p.code}）入数{p.units_per_carton}</option>)}
         </select>
         {sel && <div style={S.selBox}>選択中：<b>{sel.name}</b>（{sel.code}）{sel.jan?`／JAN ${sel.jan}`:"／JANなし"}</div>}
+        {janPick && (
+          <div style={S.janPickBox}>
+            <div style={S.janPickTitle}>同じJANの商品（ロット）が複数あります。選んでください：</div>
+            {janPick.map(p=>(
+              <button key={p.code} style={S.janPickBtn} onClick={()=>pickJan(p)}>{p.name}（{p.code}）</button>
+            ))}
+          </div>
+        )}
 
         <div style={S.row}>
           <button style={kind==="in"?{...S.toggle,...S.toggleInActive}:S.toggle} onClick={()=>setKind("in")}>入荷</button>
@@ -319,6 +335,9 @@ function HistoryView({ me }) {
   const [code,setCode]=useState(""); const [kind,setKind]=useState("");
   const [dateFrom,setDateFrom]=useState(""); const [dateTo,setDateTo]=useState("");
   const [loading,setLoading]=useState(false);
+  const [editingId,setEditingId]=useState(null);
+  const [editForm,setEditForm]=useState({});
+  const canEdit = me.role==="writer" || me.role==="admin";
 
   useEffect(()=>{ api("/api/products").then(d=>setProducts(d.items)); },[]);
 
@@ -332,6 +351,19 @@ function HistoryView({ me }) {
     api(`/api/movements?${params.toString()}`).then(d=>setItems(d.items)).finally(()=>setLoading(false));
   };
   useEffect(load, []);
+
+  const startEdit = (m) => { setEditingId(m.id); setEditForm({ kind:m.kind, unit:m.input_unit, value:m.input_value, note:m.note||"" }); };
+  const cancelEdit = () => { setEditingId(null); setEditForm({}); };
+  const saveEdit = (id) => {
+    if(!editForm.value || Number(editForm.value)<=0){ alert("数量を入力してください"); return; }
+    api(`/api/movement/${id}`,{method:"PUT",body:JSON.stringify({
+      kind:editForm.kind, unit:editForm.unit, value:Number(editForm.value), note:editForm.note||null,
+    })}).then(()=>{ cancelEdit(); load(); }).catch(e=>alert(e.message));
+  };
+  const removeMovement = (id) => {
+    if(!window.confirm("この履歴を削除します。よろしいですか？（在庫数もこの分だけ戻ります）")) return;
+    api(`/api/movement/${id}`,{method:"DELETE"}).then(load).catch(e=>alert(e.message));
+  };
 
   return (
     <div style={S.page}>
@@ -359,13 +391,40 @@ function HistoryView({ me }) {
         {items.length===0 && <div style={S.muted}>該当する履歴がありません</div>}
         {items.map(m=>(
           <div key={m.id} style={{...S.recentRow, flexWrap:"wrap"}}>
-            <span style={{...S.badge, background:m.kind==="in"?C.inBg:C.outBg, color:m.kind==="in"?C.accent:C.alert}}>{m.kind==="in"?"入荷":"出荷"}</span>
-            <span style={S.recentName}>{m.name}</span>
-            <span style={S.recentQty}>{m.qty}個</span>
-            <div style={{width:"100%", fontSize:11, color:"#8a8576", display:"flex", justifyContent:"space-between"}}>
-              <span>{m.move_date}{m.input_unit==="carton"?`（${m.input_value}カートン入力）`:""}{m.note?` ・ ${m.note}`:""}</span>
-              <span>{m.created_by||"—"}</span>
-            </div>
+            {editingId===m.id ? (
+              <div style={{width:"100%"}}>
+                <div style={S.row}>
+                  <button style={editForm.kind==="in"?{...S.toggle,...S.toggleInActive}:S.toggle} onClick={()=>setEditForm(f=>({...f,kind:"in"}))}>入荷</button>
+                  <button style={editForm.kind==="out"?{...S.toggle,...S.toggleOutActive}:S.toggle} onClick={()=>setEditForm(f=>({...f,kind:"out"}))}>出荷</button>
+                </div>
+                <div style={S.row}>
+                  <button style={editForm.unit==="carton"?{...S.toggle,...S.unitActive}:S.toggle} onClick={()=>setEditForm(f=>({...f,unit:"carton"}))}>カートン</button>
+                  <button style={editForm.unit==="pcs"?{...S.toggle,...S.unitActive}:S.toggle} onClick={()=>setEditForm(f=>({...f,unit:"pcs"}))}>個数</button>
+                </div>
+                <input style={S.input} type="number" min="1" value={editForm.value} onChange={e=>setEditForm(f=>({...f,value:e.target.value}))} placeholder="数量" />
+                <input style={S.input} value={editForm.note} onChange={e=>setEditForm(f=>({...f,note:e.target.value}))} placeholder="備考（任意）" />
+                <div style={S.row}>
+                  <button style={S.primaryBtn} onClick={()=>saveEdit(m.id)}>保存</button>
+                  <button style={S.toggle} onClick={cancelEdit}>キャンセル</button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <span style={{...S.badge, background:m.kind==="in"?C.inBg:C.outBg, color:m.kind==="in"?C.accent:C.alert}}>{m.kind==="in"?"入荷":"出荷"}</span>
+                <span style={S.recentName}>{m.name}</span>
+                <span style={S.recentQty}>{m.qty}個</span>
+                <div style={{width:"100%", fontSize:11, color:"#8a8576", display:"flex", justifyContent:"space-between"}}>
+                  <span>{m.move_date}{m.input_unit==="carton"?`（${m.input_value}カートン入力）`:""}{m.note?` ・ ${m.note}`:""}</span>
+                  <span>{m.created_by||"—"}</span>
+                </div>
+                {canEdit && (
+                  <div style={{width:"100%", display:"flex", gap:8, justifyContent:"flex-end", marginTop:4}}>
+                    <button style={S.editBtn} onClick={()=>startEdit(m)}>修正</button>
+                    <button style={S.removeBtn2} onClick={()=>removeMovement(m.id)}>削除</button>
+                  </div>
+                )}
+              </>
+            )}
           </div>
         ))}
       </div>
@@ -490,6 +549,11 @@ const S = {
   selectSm:{flex:1, padding:"10px", border:`1px solid ${C.line}`, borderRadius:8, background:"#fff", fontSize:14},
   inputSm:{width:110, padding:"10px", border:`1px solid ${C.line}`, borderRadius:8, fontSize:14},
   removeBtn:{width:32, height:38, background:"#fbeef0", color:C.alert, border:"none", borderRadius:6, fontSize:16, fontWeight:700},
+  removeBtn2:{background:"#fbeef0", color:C.alert, border:"none", borderRadius:6, padding:"6px 12px", fontSize:12, fontWeight:700},
+  editBtn:{background:"#f0f0eb", color:"#6b6658", border:"none", borderRadius:6, padding:"6px 12px", fontSize:12, fontWeight:700},
+  janPickBox:{marginTop:8, padding:10, background:"#fff8e6", border:`1px solid ${C.gold}`, borderRadius:8},
+  janPickTitle:{fontSize:12.5, color:"#7a5f28", marginBottom:6, fontWeight:600},
+  janPickBtn:{display:"block", width:"100%", textAlign:"left", padding:"8px 10px", marginBottom:6, background:"#fff", border:`1px solid ${C.line}`, borderRadius:6, fontSize:13},
   addRowBtn:{width:"100%", padding:"10px", background:"transparent", border:`1px dashed ${C.gold}`, borderRadius:8, color:"#7a5f28", fontWeight:600, fontSize:13, marginTop:4},
   boxRow:{display:"flex", gap:6, marginBottom:8, alignItems:"center"},
   boxLabel:{fontSize:12.5, color:"#6b6658", width:36, flexShrink:0},

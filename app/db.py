@@ -229,6 +229,7 @@ def set_stock(code, target_stock, created_by=None, note=None):
 def add_product(code, name, units_per_carton, jan=None, opening=0, moq=0):
     """新商品をマスタに追加する（管理者用）。
     moq: メーカー発注単位。felicross_fba側のメーカー発注判定で使用する（未入力可・0=未設定）。
+    jan: 同じJANを複数の商品コードで共有できる(ロット違いなどを別商品として管理するため)。
     """
     code = str(code).strip()
     name = str(name).strip()
@@ -241,9 +242,6 @@ def add_product(code, name, units_per_carton, jan=None, opening=0, moq=0):
             raise ValueError(f"商品コード {code} は既に登録されています")
         if jan:
             jan = str(jan).strip()
-            dup = conn.execute("SELECT code FROM products WHERE jan=?", (jan,)).fetchone()
-            if dup:
-                raise ValueError(f"JAN {jan} は既に「{dup['code']}」に登録されています")
         maxo = conn.execute("SELECT COALESCE(MAX(sort_order),0) m FROM products").fetchone()["m"]
         conn.execute(
             "INSERT INTO products (code,name,jan,units_per_carton,opening,sort_order,moq) VALUES (?,?,?,?,?,?,?)",
@@ -257,13 +255,60 @@ def add_product(code, name, units_per_carton, jan=None, opening=0, moq=0):
 
 
 def find_by_jan(jan):
-    """JANコードから商品を1件特定する（バーコード読み取り用）。"""
+    """JANコードから商品を検索する（バーコード読み取り用）。
+    同じJANをロット違い等で複数商品コードに登録している場合は全件返す
+    （呼び出し側で1件なら自動選択、複数ならユーザーに選ばせる）。"""
     conn = get_conn()
     try:
-        r = conn.execute(
-            "SELECT * FROM products WHERE jan=? AND discontinued=0", (str(jan).strip(),)
-        ).fetchone()
-        return dict(r) if r else None
+        rows = conn.execute(
+            "SELECT * FROM products WHERE jan=? AND discontinued=0 ORDER BY sort_order",
+            (str(jan).strip(),),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def update_movement(movement_id, kind=None, input_unit=None, input_value=None, note=None):
+    """入出庫履歴の修正(数量・種別・備考)。商品自体を変更したい場合は削除して登録し直す。"""
+    conn = get_conn()
+    try:
+        row = conn.execute("SELECT * FROM movements WHERE id=?", (movement_id,)).fetchone()
+        if not row:
+            raise ValueError("該当する履歴が見つかりません")
+        new_kind = kind if kind is not None else row["kind"]
+        new_unit = input_unit if input_unit is not None else row["input_unit"]
+        new_value = int(input_value) if input_value is not None else row["input_value"]
+        new_note = note if note is not None else row["note"]
+        if new_kind not in ("in", "out"):
+            raise ValueError("kind must be in/out")
+        if new_unit not in ("pcs", "carton"):
+            raise ValueError("unit must be pcs/carton")
+        if new_value <= 0:
+            raise ValueError("value must be > 0")
+        prod = conn.execute("SELECT * FROM products WHERE code=?", (row["code"],)).fetchone()
+        upc = prod["units_per_carton"] or 1
+        new_qty = new_value * upc if new_unit == "carton" else new_value
+        conn.execute(
+            "UPDATE movements SET kind=?, qty=?, input_unit=?, input_value=?, note=? WHERE id=?",
+            (new_kind, new_qty, new_unit, new_value, new_note, movement_id),
+        )
+        conn.commit()
+        return {"id": movement_id, "code": row["code"], "kind": new_kind, "qty": new_qty,
+                "unit": new_unit, "value": new_value}
+    finally:
+        conn.close()
+
+
+def delete_movement(movement_id):
+    """入出庫履歴を1件削除する(誤登録の取り消し)。"""
+    conn = get_conn()
+    try:
+        cur = conn.execute("DELETE FROM movements WHERE id=?", (movement_id,))
+        conn.commit()
+        if cur.rowcount == 0:
+            raise ValueError("該当する履歴が見つかりません")
+        return {"id": movement_id, "deleted": True}
     finally:
         conn.close()
 

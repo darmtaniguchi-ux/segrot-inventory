@@ -184,12 +184,12 @@ async def stock_adjust(request: Request):
 
 @app.get("/api/lookup")
 def lookup(request: Request, jan: str):
-    """バーコード(JAN)から商品を特定。読み取った文字列をそのまま渡す。"""
+    """バーコード(JAN)から商品を特定。ロット違い等で同じJANが複数商品に登録されている場合は全件返す。"""
     current_user(request)
-    p = db.find_by_jan(jan)
-    if not p:
+    items = db.find_by_jan(jan)
+    if not items:
         raise HTTPException(status_code=404, detail=f"JAN {jan} に該当する商品が見つかりません")
-    return p
+    return {"items": items}
 
 
 @app.post("/api/product")
@@ -209,6 +209,32 @@ async def create_product(request: Request):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return res
+
+
+@app.put("/api/movement/{movement_id}")
+async def edit_movement(movement_id: int, request: Request):
+    """入出庫履歴の修正(誤入力の訂正)。"""
+    require_writer(request)
+    body = await request.json()
+    try:
+        res = db.update_movement(
+            movement_id, kind=body.get("kind"),
+            input_unit=body.get("unit"), input_value=body.get("value"),
+            note=body.get("note"),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return res
+
+
+@app.delete("/api/movement/{movement_id}")
+def remove_movement(movement_id: int, request: Request):
+    """入出庫履歴の削除(誤登録の取り消し)。"""
+    require_writer(request)
+    try:
+        return db.delete_movement(movement_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @app.get("/api/movements")
