@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS movements (
     input_unit  TEXT NOT NULL DEFAULT 'pcs',       -- 入力時の単位(履歴用): 'pcs' or 'carton'
     input_value INTEGER NOT NULL DEFAULT 0,        -- 入力時の値(履歴用)
     note        TEXT,
+    source      TEXT NOT NULL DEFAULT 'manual',    -- 'manual'=通常の入出庫 / 'adjust'=棚卸等の在庫調整(履歴には既定で表示しない)
     created_at  TEXT NOT NULL,
     created_by  TEXT,
     FOREIGN KEY (code) REFERENCES products(code)
@@ -103,6 +104,10 @@ def init_db():
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(products)").fetchall()}
         if "moq" not in cols:
             conn.execute("ALTER TABLE products ADD COLUMN moq INTEGER NOT NULL DEFAULT 0")
+
+        mv_cols = {r["name"] for r in conn.execute("PRAGMA table_info(movements)").fetchall()}
+        if "source" not in mv_cols:
+            conn.execute("ALTER TABLE movements ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'")
 
         n = conn.execute("SELECT COUNT(*) c FROM products").fetchone()["c"]
         if n == 0 and os.path.exists(SEED_PATH):
@@ -178,10 +183,10 @@ def add_movement(code, kind, input_unit, input_value, note=None, created_by=None
 
         # 出庫が在庫を超える場合は警告対象（登録は許すが呼び出し側で確認）
         conn.execute(
-            "INSERT INTO movements (code,move_date,kind,qty,input_unit,input_value,note,created_at,created_by) "
-            "VALUES (?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO movements (code,move_date,kind,qty,input_unit,input_value,note,source,created_at,created_by) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
             (code, date.today().isoformat(), kind, qty, input_unit, input_value,
-             note, datetime.now(timezone.utc).isoformat(), created_by),
+             note, "manual", datetime.now(timezone.utc).isoformat(), created_by),
         )
         conn.commit()
         return {"code": code, "kind": kind, "qty": qty, "unit": input_unit, "value": input_value}
@@ -215,10 +220,10 @@ def set_stock(code, target_stock, created_by=None, note=None):
         kind = "in" if delta > 0 else "out"
         qty = abs(delta)
         conn.execute(
-            "INSERT INTO movements (code,move_date,kind,qty,input_unit,input_value,note,created_at,created_by) "
-            "VALUES (?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO movements (code,move_date,kind,qty,input_unit,input_value,note,source,created_at,created_by) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
             (code, date.today().isoformat(), kind, qty, "pcs", qty,
-             note, datetime.now(timezone.utc).isoformat(), created_by),
+             note, "adjust", datetime.now(timezone.utc).isoformat(), created_by),
         )
         conn.commit()
         return {"code": code, "before": current, "after": target_stock, "adjusted": delta}
@@ -269,8 +274,9 @@ def find_by_jan(jan):
         conn.close()
 
 
-def update_movement(movement_id, kind=None, input_unit=None, input_value=None, note=None):
-    """入出庫履歴の修正(数量・種別・備考)。商品自体を変更したい場合は削除して登録し直す。"""
+def update_movement(movement_id, kind=None, input_unit=None, input_value=None, note=None, source=None):
+    """入出庫履歴の修正(数量・種別・備考)。商品自体を変更したい場合は削除して登録し直す。
+    source: 通常は変更不要。棚卸調整分を履歴一覧から隠す/戻すためのメンテナンス用途で使う('manual'/'adjust')。"""
     conn = get_conn()
     try:
         row = conn.execute("SELECT * FROM movements WHERE id=?", (movement_id,)).fetchone()
@@ -280,6 +286,7 @@ def update_movement(movement_id, kind=None, input_unit=None, input_value=None, n
         new_unit = input_unit if input_unit is not None else row["input_unit"]
         new_value = int(input_value) if input_value is not None else row["input_value"]
         new_note = note if note is not None else row["note"]
+        new_source = source if source is not None else row["source"]
         if new_kind not in ("in", "out"):
             raise ValueError("kind must be in/out")
         if new_unit not in ("pcs", "carton"):
@@ -290,12 +297,12 @@ def update_movement(movement_id, kind=None, input_unit=None, input_value=None, n
         upc = prod["units_per_carton"] or 1
         new_qty = new_value * upc if new_unit == "carton" else new_value
         conn.execute(
-            "UPDATE movements SET kind=?, qty=?, input_unit=?, input_value=?, note=? WHERE id=?",
-            (new_kind, new_qty, new_unit, new_value, new_note, movement_id),
+            "UPDATE movements SET kind=?, qty=?, input_unit=?, input_value=?, note=?, source=? WHERE id=?",
+            (new_kind, new_qty, new_unit, new_value, new_note, new_source, movement_id),
         )
         conn.commit()
         return {"id": movement_id, "code": row["code"], "kind": new_kind, "qty": new_qty,
-                "unit": new_unit, "value": new_value}
+                "unit": new_unit, "value": new_value, "source": new_source}
     finally:
         conn.close()
 
@@ -313,12 +320,15 @@ def delete_movement(movement_id):
         conn.close()
 
 
-def recent_movements(limit=30, code=None, kind=None, date_from=None, date_to=None):
+def recent_movements(limit=30, code=None, kind=None, date_from=None, date_to=None, include_adjust=False):
     """
     入出庫履歴を新しい順で返す。
     code/kind/date_from(YYYY-MM-DD)/date_to(YYYY-MM-DD)で絞り込み可能(すべて任意)。
+    include_adjust=False(既定)の場合、棚卸等の在庫調整分(source='adjust')は日々の入出庫履歴には表示しない。
     """
     conditions, params = [], []
+    if not include_adjust:
+        conditions.append("m.source != 'adjust'")
     if code:
         conditions.append("m.code = ?")
         params.append(code)

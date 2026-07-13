@@ -191,12 +191,15 @@ function FbaShipmentView({ me }) {
   const removeBoxRow = (i) => setBoxes(arr=>arr.filter((_,idx)=>idx!==i));
 
   const submit = () => {
-    const cleanItems = items.filter(it=>it.code && it.cartons).map(it=>({code:it.code, cartons:Number(it.cartons)}));
+    const selected = items.filter(it=>it.code);
+    if(!selected.length){ setMsg({e:true,t:"発送する商品を1件以上選んでください"}); return; }
+    const missingCartons = selected.filter(it=>!it.cartons || Number(it.cartons)<=0);
+    if(missingCartons.length){ setMsg({e:true,t:"カートン数を入力してください（商品を選んだ行すべてに必要です）"}); return; }
+    const cleanItems = selected.map(it=>({code:it.code, cartons:Number(it.cartons)}));
     const cleanBoxes = boxes.map(b=>({
       length_cm: b.length_cm?Number(b.length_cm):null, width_cm: b.width_cm?Number(b.width_cm):null,
       height_cm: b.height_cm?Number(b.height_cm):null, weight_kg: b.weight_kg?Number(b.weight_kg):null,
     }));
-    if(!cleanItems.length){ setMsg({e:true,t:"発送する商品を1件以上入力してください"}); return; }
     api("/api/fba-shipment",{method:"POST",body:JSON.stringify({items:cleanItems,boxes:cleanBoxes,carrier,note})})
       .then(r=>{ setMsg({e:false,t:`報告を登録しました（発送ID: ${r.shipment_id} / 箱${r.box_count}個）`});
         setItems([{code:"",cartons:""}]); setBoxes([{length_cm:"",width_cm:"",height_cm:"",weight_kg:""}]);
@@ -337,6 +340,7 @@ function HistoryView({ me }) {
   const [loading,setLoading]=useState(false);
   const [editingId,setEditingId]=useState(null);
   const [editForm,setEditForm]=useState({});
+  const [includeAdjust,setIncludeAdjust]=useState(false);
   const canEdit = me.role==="writer" || me.role==="admin";
 
   useEffect(()=>{ api("/api/products").then(d=>setProducts(d.items)); },[]);
@@ -348,9 +352,10 @@ function HistoryView({ me }) {
     if(kind) params.set("kind",kind);
     if(dateFrom) params.set("date_from",dateFrom);
     if(dateTo) params.set("date_to",dateTo);
+    if(includeAdjust) params.set("include_adjust","true");
     api(`/api/movements?${params.toString()}`).then(d=>setItems(d.items)).finally(()=>setLoading(false));
   };
-  useEffect(load, []);
+  useEffect(load, [includeAdjust]);
 
   const startEdit = (m) => { setEditingId(m.id); setEditForm({ kind:m.kind, unit:m.input_unit, value:m.input_value, note:m.note||"" }); };
   const cancelEdit = () => { setEditingId(null); setEditForm({}); };
@@ -384,6 +389,10 @@ function HistoryView({ me }) {
           <input style={S.input} type="date" value={dateFrom} onChange={e=>setDateFrom(e.target.value)} />
           <input style={S.input} type="date" value={dateTo} onChange={e=>setDateTo(e.target.value)} />
         </div>
+        <label style={S.checkboxRow}>
+          <input type="checkbox" checked={includeAdjust} onChange={e=>setIncludeAdjust(e.target.checked)} />
+          棚卸・初期登録などの在庫調整分も表示する
+        </label>
         <button style={S.primaryBtn} onClick={load}>{loading?"検索中…":"絞り込む"}</button>
       </div>
       <div style={S.card}>
@@ -554,6 +563,7 @@ const S = {
   janPickBox:{marginTop:8, padding:10, background:"#fff8e6", border:`1px solid ${C.gold}`, borderRadius:8},
   janPickTitle:{fontSize:12.5, color:"#7a5f28", marginBottom:6, fontWeight:600},
   janPickBtn:{display:"block", width:"100%", textAlign:"left", padding:"8px 10px", marginBottom:6, background:"#fff", border:`1px solid ${C.line}`, borderRadius:6, fontSize:13},
+  checkboxRow:{display:"flex", alignItems:"center", gap:6, fontSize:12.5, color:"#6b6658", margin:"10px 0"},
   addRowBtn:{width:"100%", padding:"10px", background:"transparent", border:`1px dashed ${C.gold}`, borderRadius:8, color:"#7a5f28", fontWeight:600, fontSize:13, marginTop:4},
   boxRow:{display:"flex", gap:6, marginBottom:8, alignItems:"center"},
   boxLabel:{fontSize:12.5, color:"#6b6658", width:36, flexShrink:0},

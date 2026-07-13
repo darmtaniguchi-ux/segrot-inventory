@@ -220,7 +220,7 @@ async def edit_movement(movement_id: int, request: Request):
         res = db.update_movement(
             movement_id, kind=body.get("kind"),
             input_unit=body.get("unit"), input_value=body.get("value"),
-            note=body.get("note"),
+            note=body.get("note"), source=body.get("source"),
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -239,12 +239,15 @@ def remove_movement(movement_id: int, request: Request):
 
 @app.get("/api/movements")
 def movements(request: Request, code: str = None, kind: str = None,
-              date_from: str = None, date_to: str = None, limit: int = 30):
-    """入出庫履歴。閲覧のみなら誰でも見られる(writer/viewer/admin共通)。"""
+              date_from: str = None, date_to: str = None, limit: int = 30,
+              include_adjust: bool = False):
+    """入出庫履歴。閲覧のみなら誰でも見られる(writer/viewer/admin共通)。
+    include_adjust=trueで棚卸等の在庫調整分も含めて表示する。"""
     current_user(request)
     return {"items": db.recent_movements(
         limit=min(limit, 1000), code=code or None, kind=kind or None,
         date_from=date_from or None, date_to=date_to or None,
+        include_adjust=include_adjust,
     )}
 
 
