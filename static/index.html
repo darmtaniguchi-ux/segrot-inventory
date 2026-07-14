@@ -170,8 +170,7 @@ function InputView({ me }) {
 
 function FbaShipmentView({ me }) {
   const [products,setProducts]=useState([]);
-  const [items,setItems]=useState([{code:"",cartons:""}]);
-  const [boxes,setBoxes]=useState([{length_cm:"",width_cm:"",height_cm:"",weight_kg:""}]);
+  const [boxes,setBoxes]=useState([{length_cm:"",width_cm:"",height_cm:"",weight_kg:"",items:[{code:"",qty:""}]}]);
   const [carrier,setCarrier]=useState(""); const [note,setNote]=useState("");
   const [msg,setMsg]=useState(null); const [history,setHistory]=useState([]);
   const [trackInput,setTrackInput]=useState({});
@@ -182,27 +181,27 @@ function FbaShipmentView({ me }) {
   };
   useEffect(load,[]);
 
-  const setItem = (i,key,val) => setItems(arr=>arr.map((it,idx)=>idx===i?{...it,[key]:val}:it));
-  const addItemRow = () => setItems(arr=>[...arr,{code:"",cartons:""}]);
-  const removeItemRow = (i) => setItems(arr=>arr.filter((_,idx)=>idx!==i));
+  const setBoxField = (bi,key,val) => setBoxes(arr=>arr.map((b,idx)=>idx===bi?{...b,[key]:val}:b));
+  const addBoxRow = () => setBoxes(arr=>[...arr,{length_cm:"",width_cm:"",height_cm:"",weight_kg:"",items:[{code:"",qty:""}]}]);
+  const removeBoxRow = (bi) => setBoxes(arr=>arr.filter((_,idx)=>idx!==bi));
 
-  const setBox = (i,key,val) => setBoxes(arr=>arr.map((b,idx)=>idx===i?{...b,[key]:val}:b));
-  const addBoxRow = () => setBoxes(arr=>[...arr,{length_cm:"",width_cm:"",height_cm:"",weight_kg:""}]);
-  const removeBoxRow = (i) => setBoxes(arr=>arr.filter((_,idx)=>idx!==i));
+  const setBoxItem = (bi,ii,key,val) => setBoxes(arr=>arr.map((b,idx)=>idx!==bi?b:{...b,items:b.items.map((it,iidx)=>iidx===ii?{...it,[key]:val}:it)}));
+  const addBoxItemRow = (bi) => setBoxes(arr=>arr.map((b,idx)=>idx!==bi?b:{...b,items:[...b.items,{code:"",qty:""}]}));
+  const removeBoxItemRow = (bi,ii) => setBoxes(arr=>arr.map((b,idx)=>idx!==bi?b:{...b,items:b.items.filter((_,iidx)=>iidx!==ii)}));
 
   const submit = () => {
-    const selected = items.filter(it=>it.code);
-    if(!selected.length){ setMsg({e:true,t:"発送する商品を1件以上選んでください"}); return; }
-    const missingCartons = selected.filter(it=>!it.cartons || Number(it.cartons)<=0);
-    if(missingCartons.length){ setMsg({e:true,t:"カートン数を入力してください（商品を選んだ行すべてに必要です）"}); return; }
-    const cleanItems = selected.map(it=>({code:it.code, cartons:Number(it.cartons)}));
+    let anySelected=false, missingQty=false;
+    boxes.forEach(b=>b.items.forEach(it=>{ if(it.code){ anySelected=true; if(!it.qty||Number(it.qty)<=0) missingQty=true; } }));
+    if(!anySelected){ setMsg({e:true,t:"箱に商品を1件以上選んでください"}); return; }
+    if(missingQty){ setMsg({e:true,t:"個数を入力してください（商品を選んだ行すべてに必要です）"}); return; }
     const cleanBoxes = boxes.map(b=>({
       length_cm: b.length_cm?Number(b.length_cm):null, width_cm: b.width_cm?Number(b.width_cm):null,
       height_cm: b.height_cm?Number(b.height_cm):null, weight_kg: b.weight_kg?Number(b.weight_kg):null,
+      items: b.items.filter(it=>it.code).map(it=>({code:it.code, qty:Number(it.qty)})),
     }));
-    api("/api/fba-shipment",{method:"POST",body:JSON.stringify({items:cleanItems,boxes:cleanBoxes,carrier,note})})
+    api("/api/fba-shipment",{method:"POST",body:JSON.stringify({boxes:cleanBoxes,carrier,note})})
       .then(r=>{ setMsg({e:false,t:`報告を登録しました（発送ID: ${r.shipment_id} / 箱${r.box_count}個）`});
-        setItems([{code:"",cartons:""}]); setBoxes([{length_cm:"",width_cm:"",height_cm:"",weight_kg:""}]);
+        setBoxes([{length_cm:"",width_cm:"",height_cm:"",weight_kg:"",items:[{code:"",qty:""}]}]);
         setCarrier(""); setNote(""); load(); })
       .catch(e=>setMsg({e:true,t:e.message}));
   };
@@ -223,31 +222,33 @@ function FbaShipmentView({ me }) {
       </div>
 
       <div style={S.card}>
-        <div style={S.cardTitle}>発送する商品</div>
-        {items.map((it,i)=>(
-          <div key={i} style={S.itemRow}>
-            <select style={S.selectSm} value={it.code} onChange={e=>setItem(i,"code",e.target.value)}>
-              <option value="">— 商品を選択 —</option>
-              {products.map(p=><option key={p.code} value={p.code}>{p.name}（{p.code}）</option>)}
-            </select>
-            <input style={S.inputSm} type="number" min="1" placeholder="カートン数" value={it.cartons}
-              onChange={e=>setItem(i,"cartons",e.target.value)} />
-            {items.length>1 && <button style={S.removeBtn} onClick={()=>removeItemRow(i)}>×</button>}
-          </div>
-        ))}
-        <button style={S.addRowBtn} onClick={addItemRow}>＋ 商品を追加</button>
-      </div>
-
-      <div style={S.card}>
-        <div style={S.cardTitle}>箱の情報（サイズ・重量）</div>
-        {boxes.map((b,i)=>(
-          <div key={i} style={S.boxRow}>
-            <div style={S.boxLabel}>箱{i+1}</div>
-            <input style={S.inputXs} type="number" placeholder="縦cm" value={b.length_cm} onChange={e=>setBox(i,"length_cm",e.target.value)} />
-            <input style={S.inputXs} type="number" placeholder="横cm" value={b.width_cm} onChange={e=>setBox(i,"width_cm",e.target.value)} />
-            <input style={S.inputXs} type="number" placeholder="高cm" value={b.height_cm} onChange={e=>setBox(i,"height_cm",e.target.value)} />
-            <input style={S.inputXs} type="number" placeholder="重量kg" value={b.weight_kg} onChange={e=>setBox(i,"weight_kg",e.target.value)} />
-            {boxes.length>1 && <button style={S.removeBtn} onClick={()=>removeBoxRow(i)}>×</button>}
+        <div style={S.cardTitle}>箱ごとの内容（サイズ・重量・商品）</div>
+        <div style={S.muted}>1つの箱に複数の商品（別SKU）を混載できます。箱ごとに商品と個数を入力してください。</div>
+        {boxes.map((b,bi)=>(
+          <div key={bi} style={S.boxBlock}>
+            <div style={S.boxBlockHead}>
+              箱{bi+1}
+              {boxes.length>1 && <button style={S.removeBtn} onClick={()=>removeBoxRow(bi)}>×</button>}
+            </div>
+            <div style={S.boxRow}>
+              <input style={S.inputXs} type="number" placeholder="縦cm" value={b.length_cm} onChange={e=>setBoxField(bi,"length_cm",e.target.value)} />
+              <input style={S.inputXs} type="number" placeholder="横cm" value={b.width_cm} onChange={e=>setBoxField(bi,"width_cm",e.target.value)} />
+              <input style={S.inputXs} type="number" placeholder="高cm" value={b.height_cm} onChange={e=>setBoxField(bi,"height_cm",e.target.value)} />
+              <input style={S.inputXs} type="number" placeholder="重量kg" value={b.weight_kg} onChange={e=>setBoxField(bi,"weight_kg",e.target.value)} />
+            </div>
+            <div style={S.boxItemsLabel}>この箱に入れる商品</div>
+            {b.items.map((it,ii)=>(
+              <div key={ii} style={S.itemRow}>
+                <select style={S.selectSm} value={it.code} onChange={e=>setBoxItem(bi,ii,"code",e.target.value)}>
+                  <option value="">— 商品を選択 —</option>
+                  {products.map(p=><option key={p.code} value={p.code}>{p.name}（{p.code}）</option>)}
+                </select>
+                <input style={S.inputSm} type="number" min="1" placeholder="個数" value={it.qty}
+                  onChange={e=>setBoxItem(bi,ii,"qty",e.target.value)} />
+                {b.items.length>1 && <button style={S.removeBtn} onClick={()=>removeBoxItemRow(bi,ii)}>×</button>}
+              </div>
+            ))}
+            <button style={S.addRowBtn} onClick={()=>addBoxItemRow(bi)}>＋ この箱に商品を追加</button>
           </div>
         ))}
         <button style={S.addRowBtn} onClick={addBoxRow}>＋ 箱を追加</button>
@@ -268,12 +269,13 @@ function FbaShipmentView({ me }) {
         {history.map(s=>(
           <div key={s.id} style={S.shipCard}>
             <div style={S.shipHead}>発送ID {s.id} ／ {new Date(s.created_at).toLocaleString("ja-JP")} ／ {s.carrier||"配送業者未記入"}</div>
-            {s.items.map((it,i)=>(<div key={i} style={S.shipItem}>・{it.name}（{it.code}） {it.cartons}カートン / {it.qty}個</div>))}
+            {s.items.length>0 && s.items.map((it,i)=>(<div key={i} style={S.shipItem}>・{it.name}（{it.code}） {it.cartons}カートン / {it.qty}個</div>))}
             {s.boxes.map((b,i)=>{
               const key = `${s.id}-${b.box_no}`;
               return (
-                <div key={i} style={S.boxTrackRow}>
-                  <span style={S.boxTrackLabel}>箱{b.box_no}: {b.length_cm||"—"}×{b.width_cm||"—"}×{b.height_cm||"—"}cm / {b.weight_kg||"—"}kg</span>
+                <div key={i} style={S.boxTrackBlock}>
+                  <div style={S.boxTrackLabel}>箱{b.box_no}: {b.length_cm||"—"}×{b.width_cm||"—"}×{b.height_cm||"—"}cm / {b.weight_kg||"—"}kg</div>
+                  {(b.items||[]).map((it,ii)=>(<div key={ii} style={S.shipItem}>　・{it.name}（{it.code}） {it.qty}個</div>))}
                   {b.tracking_number ? (
                     <span style={S.trackDone}>追跡番号: {b.tracking_number}</span>
                   ) : (
@@ -555,7 +557,7 @@ const S = {
   primaryBtn:{width:"100%", padding:"14px", background:C.accent, color:"#fff", border:"none", borderRadius:8, fontWeight:700, fontSize:16, marginTop:12},
   notice2:{background:"#fff7ed", borderLeft:`4px solid ${C.alert}`, padding:"10px 14px", fontSize:12.5, lineHeight:1.6, borderRadius:4, marginTop:12},
   itemRow:{display:"flex", gap:6, marginBottom:8, alignItems:"center"},
-  selectSm:{flex:1, padding:"10px", border:`1px solid ${C.line}`, borderRadius:8, background:"#fff", fontSize:14},
+  selectSm:{flex:1, minWidth:0, padding:"10px", border:`1px solid ${C.line}`, borderRadius:8, background:"#fff", fontSize:14},
   inputSm:{width:110, padding:"10px", border:`1px solid ${C.line}`, borderRadius:8, fontSize:14},
   removeBtn:{width:32, height:38, background:"#fbeef0", color:C.alert, border:"none", borderRadius:6, fontSize:16, fontWeight:700},
   removeBtn2:{background:"#fbeef0", color:C.alert, border:"none", borderRadius:6, padding:"6px 12px", fontSize:12, fontWeight:700},
@@ -567,6 +569,10 @@ const S = {
   addRowBtn:{width:"100%", padding:"10px", background:"transparent", border:`1px dashed ${C.gold}`, borderRadius:8, color:"#7a5f28", fontWeight:600, fontSize:13, marginTop:4},
   boxRow:{display:"flex", gap:6, marginBottom:8, alignItems:"center"},
   boxLabel:{fontSize:12.5, color:"#6b6658", width:36, flexShrink:0},
+  boxBlock:{border:`1px solid ${C.line}`, borderRadius:8, padding:"10px 12px", marginBottom:12, background:"#fafaf7"},
+  boxBlockHead:{display:"flex", justifyContent:"space-between", alignItems:"center", fontWeight:700, fontSize:13.5, marginBottom:8},
+  boxItemsLabel:{fontSize:12, color:"#6b6658", margin:"8px 0 4px"},
+  boxTrackBlock:{marginTop:8, paddingTop:8, borderTop:`1px dashed ${C.line}`},
   inputXs:{width:0, flex:1, minWidth:0, padding:"9px 6px", border:`1px solid ${C.line}`, borderRadius:6, fontSize:13, textAlign:"center"},
   shipCard:{border:`1px solid ${C.line}`, borderRadius:8, padding:"10px 12px", marginTop:10},
   shipHead:{fontSize:12, color:"#6b6658", marginBottom:6, fontWeight:600},

@@ -258,12 +258,11 @@ def movements(request: Request, code: str = None, kind: str = None,
 
 @app.post("/api/fba-shipment")
 async def create_fba_shipment(request: Request):
-    """FBA発送報告を登録（セグロットが入力）。"""
+    """FBA発送報告を登録（セグロットが入力）。箱ごとに商品(複数SKU可)と個数を持つ。"""
     u = require_writer(request)
     body = await request.json()
     try:
         res = db.create_fba_shipment(
-            items=body.get("items", []),
             boxes=body.get("boxes", []),
             carrier=body.get("carrier"),
             note=body.get("note"),

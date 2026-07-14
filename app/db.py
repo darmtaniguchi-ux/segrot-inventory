@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS fba_shipments (
     created_by   TEXT
 );
 
+-- 旧形式(発送全体でまとめた商品リスト)。新規登録では使わないが、過去データ閲覧用に残す。
 CREATE TABLE IF NOT EXISTS fba_shipment_items (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     shipment_id  INTEGER NOT NULL,
@@ -83,6 +84,17 @@ CREATE TABLE IF NOT EXISTS fba_shipment_boxes (
     height_cm      REAL,
     weight_kg      REAL,
     tracking_number TEXT,                 -- 追跡番号(発送後に入力・後から更新可)
+    FOREIGN KEY (shipment_id) REFERENCES fba_shipments(id)
+);
+
+-- 箱ごとの内容(商品コード・個数)。1つの箱に複数SKUを混載できるようにするため、
+-- カートン単位ではなく個数(バラ)で持つ。
+CREATE TABLE IF NOT EXISTS fba_shipment_box_items (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    shipment_id  INTEGER NOT NULL,
+    box_no       INTEGER NOT NULL,
+    code         TEXT NOT NULL,
+    qty          INTEGER NOT NULL,
     FOREIGN KEY (shipment_id) REFERENCES fba_shipments(id)
 );
 """
@@ -356,27 +368,26 @@ def recent_movements(limit=30, code=None, kind=None, date_from=None, date_to=Non
         conn.close()
 
 
-def create_fba_shipment(items, boxes, carrier=None, note=None, created_by=None):
+def create_fba_shipment(boxes, carrier=None, note=None, created_by=None):
     """
     FBA発送報告を登録する（セグロット専用入力画面から）。
-    items: [{"code":.., "cartons":..}] — 発送した商品とカートン数
-    boxes: [{"length_cm":.., "width_cm":.., "height_cm":.., "weight_kg":.., "tracking_number":..}]
+    boxes: [{"length_cm":.., "width_cm":.., "height_cm":.., "weight_kg":..,
+             "items":[{"code":.., "qty":..}, ...]}]
+    1つの箱に複数のSKUを混載できるよう、商品・個数は箱ごとに持つ(カートン単位に限定しない)。
     現時点ではAmazonへのAPI登録は行わない。構造化して保存するのみ。
     """
-    if not items:
-        raise ValueError("発送商品が指定されていません")
     if not boxes:
         raise ValueError("箱の情報が指定されていません")
+    if not any(b.get("items") for b in boxes):
+        raise ValueError("箱に商品と個数を1件以上入力してください")
 
     conn = get_conn()
     try:
-        code_to_upc = {}
-        for it in items:
-            code = str(it["code"]).strip()
-            row = conn.execute("SELECT units_per_carton FROM products WHERE code=?", (code,)).fetchone()
+        all_codes = {str(it["code"]).strip() for b in boxes for it in b.get("items", [])}
+        for code in all_codes:
+            row = conn.execute("SELECT 1 FROM products WHERE code=?", (code,)).fetchone()
             if not row:
                 raise ValueError(f"商品コード {code} が見つかりません")
-            code_to_upc[code] = row["units_per_carton"]
 
         now = datetime.now(timezone.utc).isoformat()
         cur = conn.execute(
@@ -385,17 +396,7 @@ def create_fba_shipment(items, boxes, carrier=None, note=None, created_by=None):
         )
         shipment_id = cur.lastrowid
 
-        for it in items:
-            code = str(it["code"]).strip()
-            cartons = int(it["cartons"])
-            if cartons <= 0:
-                raise ValueError(f"{code} のカートン数は1以上にしてください")
-            qty = cartons * code_to_upc[code]
-            conn.execute(
-                "INSERT INTO fba_shipment_items (shipment_id, code, cartons, qty) VALUES (?,?,?,?)",
-                (shipment_id, code, cartons, qty),
-            )
-
+        item_count = 0
         for i, box in enumerate(boxes, 1):
             conn.execute(
                 "INSERT INTO fba_shipment_boxes "
@@ -404,15 +405,26 @@ def create_fba_shipment(items, boxes, carrier=None, note=None, created_by=None):
                 (shipment_id, i, box.get("length_cm"), box.get("width_cm"),
                  box.get("height_cm"), box.get("weight_kg"), box.get("tracking_number") or None),
             )
+            for it in box.get("items", []):
+                code = str(it["code"]).strip()
+                qty = int(it["qty"])
+                if qty <= 0:
+                    raise ValueError(f"{code} の個数は1以上にしてください")
+                conn.execute(
+                    "INSERT INTO fba_shipment_box_items (shipment_id, box_no, code, qty) VALUES (?,?,?,?)",
+                    (shipment_id, i, code, qty),
+                )
+                item_count += 1
 
         conn.commit()
-        return {"shipment_id": shipment_id, "item_count": len(items), "box_count": len(boxes)}
+        return {"shipment_id": shipment_id, "item_count": item_count, "box_count": len(boxes)}
     finally:
         conn.close()
 
 
 def list_fba_shipments(limit=20):
-    """FBA発送報告の一覧（新しい順）。商品・箱の明細を含む。"""
+    """FBA発送報告の一覧（新しい順）。箱ごとの商品明細を含む。
+    旧形式(発送全体でまとめた商品リスト)のデータも"items"として引き続き読めるようにする。"""
     conn = get_conn()
     try:
         shipments = conn.execute(
@@ -421,16 +433,26 @@ def list_fba_shipments(limit=20):
         result = []
         for s in shipments:
             sid = s["id"]
-            items = conn.execute(
+            legacy_items = conn.execute(
                 "SELECT si.code, si.cartons, si.qty, p.name FROM fba_shipment_items si "
                 "JOIN products p ON p.code=si.code WHERE si.shipment_id=?", (sid,)
             ).fetchall()
             boxes = conn.execute(
                 "SELECT * FROM fba_shipment_boxes WHERE shipment_id=? ORDER BY box_no", (sid,)
             ).fetchall()
+            box_list = []
+            for b in boxes:
+                box_items = conn.execute(
+                    "SELECT bi.code, bi.qty, p.name FROM fba_shipment_box_items bi "
+                    "JOIN products p ON p.code=bi.code WHERE bi.shipment_id=? AND bi.box_no=?",
+                    (sid, b["box_no"]),
+                ).fetchall()
+                bd = dict(b)
+                bd["items"] = [dict(i) for i in box_items]
+                box_list.append(bd)
             d = dict(s)
-            d["items"] = [dict(i) for i in items]
-            d["boxes"] = [dict(b) for b in boxes]
+            d["items"] = [dict(i) for i in legacy_items]
+            d["boxes"] = box_list
             result.append(d)
         return result
     finally:
