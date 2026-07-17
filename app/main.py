@@ -21,14 +21,15 @@ import os
 import json
 import hashlib
 import secrets
-from datetime import datetime
-from fastapi import FastAPI, HTTPException, Request, Response, Depends, Form
+from datetime import datetime, date
+from fastapi import FastAPI, HTTPException, Request, Response, Depends, Form, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from openpyxl import Workbook
 from pydantic import BaseModel
 
 from . import db
+from . import excel_import as excel_import_lib
 
 app = FastAPI(title="セグロット在庫連携アプリ", version="0.1.0")
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "..", "static")
@@ -165,6 +166,27 @@ async def movement(request: Request):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return res
+
+
+@app.post("/api/excel-import")
+async def excel_import(request: Request, file: UploadFile = File(...),
+                        sheet_name: str = Form(...), up_to_date: str = Form(...)):
+    """
+    Excel(在庫表)から指定シート・指定日までの入出庫を一括取り込む(バーコード入力の代替)。
+    同じシートを日付を進めて再アップロードしても、既存の取り込み分を置き換えるだけなので安全。
+    """
+    u = require_writer(request)
+    try:
+        target_date = date.fromisoformat(up_to_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="日付はYYYY-MM-DD形式で指定してください")
+    content = await file.read()
+    try:
+        parsed = excel_import_lib.parse_daily_movements(content, file.filename, sheet_name, target_date)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    result = db.replace_excel_movements(parsed["movements"], created_by=u["user"])
+    return {**result, "date_from": parsed["date_from"], "date_to": parsed["date_to"]}
 
 
 @app.post("/api/stock-adjust")

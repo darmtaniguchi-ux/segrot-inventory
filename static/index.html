@@ -492,6 +492,64 @@ function ProductAddView({ me }) {
   );
 }
 
+function ExcelImportView({ me }) {
+  const [file,setFile]=useState(null);
+  const [sheetName,setSheetName]=useState("");
+  const [upToDate,setUpToDate]=useState(()=>new Date().toISOString().slice(0,10));
+  const [busy,setBusy]=useState(false);
+  const [msg,setMsg]=useState(null);
+  const [result,setResult]=useState(null);
+
+  const submit = () => {
+    if(!file){ setMsg({t:"Excelファイルを選択してください",e:true}); return; }
+    if(!sheetName.trim()){ setMsg({t:"シート名を入力してください",e:true}); return; }
+    if(!upToDate){ setMsg({t:"日付を指定してください",e:true}); return; }
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("sheet_name", sheetName.trim());
+    fd.append("up_to_date", upToDate);
+    setBusy(true); setMsg(null); setResult(null);
+    fetch("/api/excel-import", { method:"POST", credentials:"same-origin", body: fd })
+      .then(async r => { if(!r.ok){ const e = await r.json().catch(()=>({})); throw new Error(e.detail||"取り込みに失敗しました"); } return r.json(); })
+      .then(d => { setResult(d); setMsg({t:`取り込みました（${d.date_from}〜${d.date_to}）`,e:false}); })
+      .catch(e => setMsg({t:e.message,e:true}))
+      .finally(()=>setBusy(false));
+  };
+
+  return (
+    <div style={S.page}>
+      <Header me={me} title="Excel一括登録" />
+      <div style={S.card}>
+        <div style={S.muted}>
+          在庫表(Excel)のシート名と日付を指定すると、そのシートの最初の日付から指定日までの
+          入荷・出荷をまとめて登録します。同じシートを日付を進めて再アップロードしても、
+          既に取り込んだ日はそのつど正しい内容に置き換わるので重複登録にはなりません。
+        </div>
+        <label style={S.label}>Excelファイル（.xls / .xlsx）</label>
+        <input type="file" accept=".xls,.xlsx" onChange={e=>setFile(e.target.files[0]||null)} />
+        <label style={S.label}>シート名（例: 2607）</label>
+        <input style={S.input} value={sheetName} onChange={e=>setSheetName(e.target.value)} placeholder="例: 2607" />
+        <label style={S.label}>この日まで取り込む</label>
+        <input style={S.input} type="date" value={upToDate} onChange={e=>setUpToDate(e.target.value)} />
+        {msg && <div style={msg.e?S.err:S.ok}>{msg.t}</div>}
+        <button style={S.primaryBtn} disabled={busy} onClick={submit}>{busy?"取り込み中…":"取り込む"}</button>
+      </div>
+      {result && (
+        <div style={S.card}>
+          <div style={S.cardTitle}>取り込み結果</div>
+          <div style={S.muted}>期間: {result.date_from} 〜 {result.date_to}</div>
+          <div style={S.muted}>登録件数: {result.applied}件（{result.days_touched}日分）</div>
+          {result.skipped_codes.length>0 && (
+            <div style={{...S.err, marginTop:8}}>
+              商品マスタに見つからず取り込めなかった商品コード: {result.skipped_codes.join(", ")}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Header({ me, title }) {
   const logout = () => api("/api/logout",{method:"POST"}).then(()=>location.reload());
   return (
@@ -517,12 +575,14 @@ function App() {
     <div>
       <div style={S.tabBar}>
         {canWrite && <button style={effTab==="input"?S.tabActive:S.tab} onClick={()=>setTab("input")}>入出庫入力</button>}
+        {canWrite && <button style={effTab==="excel"?S.tabActive:S.tab} onClick={()=>setTab("excel")}>Excel一括登録</button>}
         {canWrite && <button style={effTab==="fba"?S.tabActive:S.tab} onClick={()=>setTab("fba")}>FBA発送報告</button>}
         <button style={effTab==="stock"?S.tabActive:S.tab} onClick={()=>setTab("stock")}>在庫確認</button>
         <button style={effTab==="history"?S.tabActive:S.tab} onClick={()=>setTab("history")}>入出庫履歴</button>
         {isAdmin && <button style={effTab==="add"?S.tabActive:S.tab} onClick={()=>setTab("add")}>商品追加</button>}
       </div>
       {effTab==="add" && isAdmin ? <ProductAddView me={me}/>
+        : effTab==="excel" && canWrite ? <ExcelImportView me={me}/>
         : effTab==="fba" && canWrite ? <FbaShipmentView me={me}/>
         : effTab==="input" && canWrite ? <InputView me={me}/>
         : effTab==="history" ? <HistoryView me={me}/>

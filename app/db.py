@@ -332,6 +332,50 @@ def delete_movement(movement_id):
         conn.close()
 
 
+def replace_excel_movements(movements, created_by=None):
+    """
+    Excel一括取り込み(excel_import.parse_daily_movements)で得たmovementsを反映する。
+    同じ(商品コード, 日付)の既存のexcel_import由来movementは一旦削除してから入れ直すため、
+    同じシートを再アップロードして修正しても安全(重複登録にならない)。
+    商品マスタに存在しないコードはスキップし、一覧を返す。
+    """
+    conn = get_conn()
+    try:
+        codes = {m["code"] for m in movements}
+        if codes:
+            placeholders = ",".join("?" * len(codes))
+            valid_codes = {r["code"] for r in conn.execute(
+                f"SELECT code FROM products WHERE code IN ({placeholders})", tuple(codes)
+            ).fetchall()}
+        else:
+            valid_codes = set()
+        skipped_codes = sorted(codes - valid_codes)
+
+        touched_days = {(m["code"], m["date"]) for m in movements if m["code"] in valid_codes}
+        for code, mdate in touched_days:
+            conn.execute(
+                "DELETE FROM movements WHERE code=? AND move_date=? AND source='excel_import'",
+                (code, mdate),
+            )
+
+        now = datetime.now(timezone.utc).isoformat()
+        applied = 0
+        for m in movements:
+            if m["code"] not in valid_codes:
+                continue
+            conn.execute(
+                "INSERT INTO movements (code,move_date,kind,qty,input_unit,input_value,note,source,created_at,created_by) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (m["code"], m["date"], m["kind"], m["qty"], "pcs", m["qty"],
+                 "Excel一括登録", "excel_import", now, created_by),
+            )
+            applied += 1
+        conn.commit()
+        return {"applied": applied, "skipped_codes": skipped_codes, "days_touched": len(touched_days)}
+    finally:
+        conn.close()
+
+
 def recent_movements(limit=30, code=None, kind=None, date_from=None, date_to=None, include_adjust=False):
     """
     入出庫履歴を新しい順で返す。
